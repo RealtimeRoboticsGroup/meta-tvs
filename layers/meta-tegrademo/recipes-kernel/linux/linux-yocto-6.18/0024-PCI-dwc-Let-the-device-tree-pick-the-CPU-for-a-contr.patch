@@ -1,0 +1,125 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Austin Schuh <austin.linux@gmail.com>
+Date: Sat, 14 Nov 2026 19:35:15 -0800
+Subject: [PATCH] PCI: dwc: Let the device tree pick the CPU for a controller's
+ MSIs
+
+The DesignWare MSI controller demultiplexes every MSI from one or more
+chained interrupts, so all of a controller's MSIs are handled on the CPU
+those are routed to, and none of them can be moved on their own.  That
+is CPU 0 for every controller, so a NIC and an NVMe drive on different
+controllers end up sharing it.
+
+Add a linux,msi-cpu property, which routes the controller's chained MSI
+interrupts to the given CPU when the MSI domain is set up, before any
+endpoint allocates its vectors.  Set the effective affinity of each MSI
+allocated after that to the same CPU, so that /proc/irq/N/effective_affinity
+tells the truth and, on PREEMPT_RT or with threadirqs, the irq threads
+follow the hard interrupt instead of running anywhere.
+
+Without the property nothing changes.
+
+Upstream-Status: Pending
+Assisted-by: LLM
+---
+ .../pci/controller/dwc/pcie-designware-host.c | 52 ++++++++++++++++++-
+ drivers/pci/controller/dwc/pcie-designware.h  |  1 +
+ 2 files changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/pci/controller/dwc/pcie-designware-host.c b/drivers/pci/controller/dwc/pcie-designware-host.c
+index 8a36bf44cb32..8bd254a35b36 100644
+--- a/drivers/pci/controller/dwc/pcie-designware-host.c
++++ b/drivers/pci/controller/dwc/pcie-designware-host.c
+@@ -186,12 +186,22 @@ static int dw_pcie_irq_domain_alloc(struct irq_domain *domain,
+ 	if (bit < 0)
+ 		return -ENOSPC;
+ 
+-	for (i = 0; i < nr_irqs; i++)
++	for (i = 0; i < nr_irqs; i++) {
+ 		irq_domain_set_info(domain, virq + i, bit + i,
+ 				    pp->msi_irq_chip,
+ 				    pp, handle_edge_irq,
+ 				    NULL, NULL);
+ 
++		/*
++		 * The MSI's handler runs where the chained interrupt does.
++		 * Say so, so its irq thread runs there too.
++		 */
++		if (pp->msi_cpu >= 0)
++			irq_data_update_effective_affinity(
++				irq_domain_get_irq_data(domain, virq + i),
++				cpumask_of(pp->msi_cpu));
++	}
++
+ 	return 0;
+ }
+ 
+@@ -315,6 +325,44 @@ static int dw_pcie_parse_split_msi_irq(struct dw_pcie_rp *pp)
+ 	return 0;
+ }
+ 
++/*
++ * The MSIs are demultiplexed from the chained interrupts, so they all run on
++ * the CPU those are routed to, and can't be moved one at a time.
++ * linux,msi-cpu picks that CPU for the whole controller.
++ */
++static void dw_pcie_msi_set_cpu(struct dw_pcie_rp *pp)
++{
++	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
++	struct device *dev = pci->dev;
++	u32 ctrl, num_ctrls, cpu;
++	int ret;
++
++	pp->msi_cpu = -1;
++
++	if (of_property_read_u32(dev->of_node, "linux,msi-cpu", &cpu))
++		return;
++
++	if (cpu >= nr_cpu_ids || !cpu_online(cpu)) {
++		dev_warn(dev, "linux,msi-cpu: CPU %u is not online\n", cpu);
++		return;
++	}
++
++	num_ctrls = pp->num_vectors / MAX_MSI_IRQS_PER_CTRL;
++	for (ctrl = 0; ctrl < num_ctrls; ctrl++) {
++		if (pp->msi_irq[ctrl] <= 0)
++			continue;
++
++		ret = irq_set_affinity(pp->msi_irq[ctrl], cpumask_of(cpu));
++		if (ret) {
++			dev_warn(dev, "Failed to route MSI IRQ %d to CPU %u: %d\n",
++				 pp->msi_irq[ctrl], cpu, ret);
++			return;
++		}
++	}
++
++	pp->msi_cpu = cpu;
++}
++
+ int dw_pcie_msi_host_init(struct dw_pcie_rp *pp)
+ {
+ 	struct dw_pcie *pci = to_dw_pcie_from_pp(pp);
+@@ -360,6 +408,8 @@ int dw_pcie_msi_host_init(struct dw_pcie_rp *pp)
+ 						    dw_chained_msi_isr, pp);
+ 	}
+ 
++	dw_pcie_msi_set_cpu(pp);
++
+ 	/*
+ 	 * Even though the iMSI-RX Module supports 64-bit addresses some
+ 	 * peripheral PCIe devices may lack 64-bit message support. In
+diff --git a/drivers/pci/controller/dwc/pcie-designware.h b/drivers/pci/controller/dwc/pcie-designware.h
+index aa27211b68dd..5e53d446e062 100644
+--- a/drivers/pci/controller/dwc/pcie-designware.h
++++ b/drivers/pci/controller/dwc/pcie-designware.h
+@@ -425,6 +425,7 @@ struct dw_pcie_rp {
+ 	dma_addr_t		msi_data;
+ 	struct irq_chip		*msi_irq_chip;
+ 	u32			num_vectors;
++	int			msi_cpu;
+ 	u32			irq_mask[MAX_MSI_CTRLS];
+ 	struct pci_host_bridge  *bridge;
+ 	raw_spinlock_t		lock;
+-- 
+2.47.3
+

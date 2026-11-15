@@ -117,3 +117,12 @@ MACHINE_ESSENTIAL_EXTRA_RRECOMMENDS:remove = "kernel-module-pcie-tegra194 kernel
 # nvgpu and nvmap are loaded by nv-load-gpu-modules.service instead (see
 # tegra-configs_%.bbappend), so the network doesn't wait for them.
 KERNEL_MODULE_AUTOLOAD:remove = "nvgpu nvmap"
+
+# Every MSI of a PCIe controller is handled on the CPU its chained interrupt
+# goes to, CPU 0 unless told otherwise.  Keep the NVMe drive
+# (/bus@0/pcie@14160000) there, and move the Ethernet (/bus@0/pcie@140a0000)
+# to CPU 1.
+DT_MSI_CPUS = " \
+    /bus@0/pcie@14160000=0 \
+    /bus@0/pcie@140a0000=1 \
+"
