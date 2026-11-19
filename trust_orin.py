@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Trusts an Orin's robot CA on this computer.
 
-So browsers and Foxglove can connect to the Orin over https and wss://.
-Runs on macOS, Linux and Windows with Python 3.8 or newer and nothing else
-from outside the standard library.
+So browsers and Foxglove can connect to the Orin over https and wss://.  On
+Linux it also goes in the system's store, with sudo, for the command-line
+tools that read that instead (curl, Python, Claude Code).  Runs on macOS,
+Linux and Windows with Python 3.8 or newer and nothing else from outside the
+standard library.
 
 The CA is one of two kinds:
 
@@ -285,23 +287,84 @@ def windows():
     return sys.platform in ("win32", "cygwin", "msys")
 
 
+# Linux's system store, which OpenSSL, GnuTLS and the like read: where each
+# family of distros wants an extra CA, and the command that rebuilds the
+# store from it.  Chrome, Foxglove and Firefox read NSS instead.
+SYSTEM_STORES = [
+    # Debian and Ubuntu.  It only picks up files ending in .crt.
+    ("/usr/local/share/ca-certificates", "update-ca-certificates"),
+    # Fedora and RHEL.
+    ("/etc/pki/ca-trust/source/anchors", "update-ca-trust"),
+    # Arch.
+    ("/etc/ca-certificates/trust-source/anchors", "update-ca-trust"),
+]
+
+
+def system_store():
+    """(directory, update command) for this Linux, or None."""
+    for directory, update in SYSTEM_STORES:
+        if os.path.isdir(directory) and shutil.which(update):
+            return directory, update
+    return None
+
+
+def system_file(directory, cn):
+    return os.path.join(directory, cn.replace(" ", "_") + ".crt")
+
+
+def as_root(*args):
+    """Runs args as root, asking sudo for your password if need be."""
+    if os.geteuid() == 0:
+        return run(*args, check=False).returncode == 0
+    if not shutil.which("sudo"):
+        print("Needs sudo for:", " ".join(args))
+        return False
+    return run("sudo", *args, check=False).returncode == 0
+
+
 def run(*args, check=True):
     print("+", " ".join(args))
     return subprocess.run(args, check=check)
 
 
-def uninstall(cn):
+def uninstall_system(cn):
+    store = system_store()
+    if store and os.path.exists(system_file(store[0], cn)):
+        if as_root("rm", "-f", system_file(store[0], cn)):
+            as_root(store[1])
+
+
+def install_system(cn, path):
+    """Also trusts it for what reads Linux's system store.  Only warns if it
+    can't, since browsers and Foxglove trust it without this."""
+    store = system_store()
+    if not store:
+        print("Didn't add it to the system's store: no update-ca-certificates "
+              "or update-ca-trust here.")
+        return
+    directory, update = store
+    if not (as_root("install", "-m", "644", path, system_file(directory, cn)) and
+            as_root(update)):
+        print("Couldn't add it to the system's store, so curl, Python and "
+              "Claude Code won't trust the Orin.  Browsers and Foxglove do.")
+
+
+def uninstall(cn, system=True):
     if sys.platform == "darwin":
         while subprocess.run(["security", "find-certificate", "-c", cn, KEYCHAIN],
                              capture_output=True).returncode == 0:
             run("security", "delete-certificate", "-t", "-c", cn, KEYCHAIN)
     elif windows():
         run("certutil.exe", "-user", "-delstore", "Root", cn, check=False)
-    elif shutil.which("certutil"):
-        for db in nss_databases():
-            while subprocess.run(["certutil", "-d", f"sql:{db}", "-L", "-n", cn],
-                                 capture_output=True).returncode == 0:
-                run("certutil", "-d", f"sql:{db}", "-D", "-n", cn)
+    elif sys.platform.startswith("linux"):
+        if shutil.which("certutil"):
+            for db in nss_databases():
+                while subprocess.run(
+                        ["certutil", "-d", f"sql:{db}", "-L", "-n", cn],
+                        capture_output=True).returncode == 0:
+                    run("certutil", "-d", f"sql:{db}", "-D", "-n", cn)
+        if system:
+            uninstall_system(cn)
 
 
 def install(cn, der_bytes):
@@ -335,6 +398,9 @@ def install(cn, der_bytes):
             for db in nss_databases():
                 run("certutil", "-d", f"sql:{db}", "-A", "-n", cn, "-t", "C,,",
                     "-i", path)
+            # Its name constraints and extended key usage still limit it to
+            # the Orins' TLS servers there.
+            install_system(cn, path)
         else:
             sys.exit(f"Don't know how to trust a CA on {sys.platform}.")
 
@@ -384,7 +450,9 @@ def main():
     if TEAM_CN.fullmatch(cn) and not args.yes:
         if input("Trust it? [y/N] ").strip().lower() not in ("y", "yes"):
             return
-    uninstall(cn)
+    # install() overwrites the system store's copy, so leave that in place
+    # rather than rebuilding the store twice.
+    uninstall(cn, system=False)
     install(cn, cert.der)
     url = f"https://{host}.local" + ("" if PORT == 443 else f":{PORT}")
     print(f"Trusted {cn}.  Try {url}/")

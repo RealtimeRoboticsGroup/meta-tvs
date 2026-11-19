@@ -149,7 +149,10 @@ keeps these in `/etc/aos/tls`:
 packages) fetches the CA from the robot's `robot_server` on port 443
 (`ORIN_TLS_PORT` overrides it), checks that its constraints are exactly one
 of the two shapes above, and installs it for Chrome, Safari, Edge, the
-Foxglove app and (on Linux) Firefox.  It asks before trusting a
+Foxglove app and (on Linux) Firefox.  On Linux it also adds it, with sudo,
+to the system's store (`update-ca-certificates` or `update-ca-trust`), for
+curl, Python and Claude Code, which don't read the browsers' NSS
+databases.  It asks before trusting a
 team CA, listing its teams.  `--check` only checks, and `--remove` takes it
 out again.  With the team CA, a laptop trusts all of the team's robots once,
 and renaming or reflashing a robot (followed by `install_team_ca.sh`) needs
