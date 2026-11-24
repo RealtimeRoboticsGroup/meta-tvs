@@ -1,4 +1,4 @@
-# meta-frc4646
+# meta-tvs
 
 The image AOS runs on: an Orin Nano 8GB on a Seeed Studio J401 carrier, with
 a mainline `PREEMPT_RT` kernel. It is built with Yocto Project tools and the
