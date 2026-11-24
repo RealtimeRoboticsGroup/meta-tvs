@@ -1,0 +1,55 @@
+#!/bin/bash
+# Makes a self-extracting flasher from a tegraflash package:
+# flash-run-header.sh with the package appended.  The header checks every
+# file it unpacks before flashing, so a truncated download or a bad unpack
+# stops it before the Jetson is touched.
+#
+# Usage: make-flash-run PACKAGE.tegraflash-tar[.zst] OUTPUT.run [MACHINE]
+#
+# The image_types_flashrun class runs this for each build; it can also be
+# run by hand on a published package.
+
+set -euxo pipefail
+
+in=$1
+out=$2
+machine=${3:-unknown}
+# Each thread at -21 takes about 650 MiB, so 32 would take 21 GiB.
+threads=${FLASH_RUN_THREADS:-8}
+header="$(dirname "$(readlink -f "$0")")/flash-run-header.sh"
+
+# The settings the sysroot uses: a 128 MiB window is the largest that zstd -d
+# and tar --zstd unpack without --long.
+ZSTD_FLAGS="--ultra -21 --long=27"
+
+case "$in" in
+    *.zst) unpack() { zstd -dc "$in"; } ;;
+    *) unpack() { cat "$in"; } ;;
+esac
+
+tmp=$(mktemp -d -p "$(dirname "$out")" .flash-run-XXXXXX)
+trap 'rm -rf "$tmp"' EXIT
+
+# A sparse file's holes aren't in the tar, so its length is about the space
+# the unpacked files take.
+data_size=$(unpack | wc -c)
+
+# tar expands sparse files' holes into zeros for --to-command, so these are
+# the hashes of the files as they are once unpacked.
+unpack | tar -x --to-command='printf "%s  %s\n" "$(sha256sum | cut -d " " -f 1)" "$TAR_FILENAME"' \
+    | LC_ALL=C sort -k 2 > "$tmp/SHA256SUMS"
+
+unpack | zstd -q $ZSTD_FLAGS -T"$threads" -o "$tmp/payload"
+payload_size=$(stat -c %s "$tmp/payload")
+
+sed -e "s|@PAYLOAD_SIZE@|$payload_size|" \
+    -e "s|@DATA_SIZE@|$data_size|" \
+    -e "s|@MACHINE@|$machine|" \
+    -e "s|@IMAGE@|$(basename "$in")|" \
+    -e "s|@RUNNAME@|$(basename "$out")|" \
+    -e "/^@SHA256SUMS@\$/{r $tmp/SHA256SUMS" -e "d}" \
+    "$header" > "$tmp/header"
+
+cat "$tmp/header" "$tmp/payload" > "$tmp/out"
+chmod 755 "$tmp/out"
+mv "$tmp/out" "$out"

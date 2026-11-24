@@ -62,7 +62,9 @@ bitbake demo-image-base
 ```
 
 The flash package is
-`build/tmp/deploy/images/$MACHINE/demo-image-base-$MACHINE.rootfs.tegraflash-tar.zst`.
+`build/tmp/deploy/images/$MACHINE/demo-image-base-$MACHINE.rootfs.tegraflash-tar.zst`,
+and the same package as a self-extracting flasher is
+`demo-image-base-$MACHINE.rootfs.tegraflash-tar.run` next to it.
 
 ## Flashing
 
@@ -84,7 +86,15 @@ To verify the orin is in recovery mode, run `lsusb -d 0955:` on the flashing hos
 
 ### 2. Flash the package
 
-Extract the flash package into an empty directory.
+Copy the `.run` flasher to a directory on the flashing host's own disk (not `/tmp` or a USB stick), and from that directory run
+
+```
+sudo bash ./demo-image-base-$MACHINE.rootfs.tegraflash-tar.run
+```
+
+It unpacks the flash package next to itself, checks every file in it, waits for the orin in recovery mode, flashes it, and deletes the unpacked files again. It keeps the logs in a `flash-logs-*` directory next to itself, and says which packages to install if the host is missing any. Options after the name are passed to `initrd-flash`, e.g. `--erase-nvme`.
+
+To flash from the `.tegraflash-tar.zst` instead, extract it into an empty directory.
 
 Warning: Extracting a zst tarball from the Gnome GUI is prone to corruption! Instead, use a terminal to extract with
 

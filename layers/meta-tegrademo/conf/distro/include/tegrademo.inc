@@ -67,6 +67,14 @@ IMAGE_TEGRAFLASH_FS_TYPE:tegra = "xfs"
 # to hold the 64G XFS_IMAGE_SIZE.
 ROOTFSPART_SIZE = "68719476736"
 
+# Also make the flash package as a self-extracting flasher (see
+# image_types_flashrun.bbclass).  += rather than :append, so images that set
+# IMAGE_FSTYPES themselves, like the initramfs, don't get one.
+IMAGE_CLASSES += "image_types_flashrun"
+FLASH_RUN_FSTYPE = ""
+FLASH_RUN_FSTYPE:tegra = "tegraflash-tar.run"
+IMAGE_FSTYPES += "${FLASH_RUN_FSTYPE}"
+
 # No NFS, Bluetooth, mobile data or NFC on the robot.  This drops
 # packagegroup-base's rpcbind, bluez, ofono and neard.  The kernel has no NFS
 # or Bluetooth either (config_trim.cfg).
