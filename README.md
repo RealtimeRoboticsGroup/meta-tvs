@@ -31,21 +31,22 @@ git submodule update --init --recursive
 
 ## Building
 
-Confirm the carrier and module before selecting a machine;
-`p3768-0000-p3767-0003` describes an 8GB production module on a P3768 carrier.
-Build on Linux with a case-sensitive build filesystem. To build, run:
+### 1. Select a machine
 
-```
-export MACHINE=p3768-0000-p3767-0003
-. layers/oe-init-build-env build
-bitbake demo-image-base
-```
+Confirm the carrier and module, and set MACHINE accordingly.
+
+| Board + Carrier                          | Command                                |
+| ---------------------------------------- | -------------------------------------- |
+| 8GB production module on a P3768 carrier | `export MACHINE=p3768-0000-p3767-0003` |
+| Jetson Orin Nano Developer Kit           | `MACHINE=jetson-orin-nano-devkit-nvme` |
+
+### 2. Build the image with bitbake
+
+Warning: Always build on Linux with a case-sensitive build filesystem.
 
 Note: this hasn't been tested yet with a fresh checkout, not everything might be captured yet.
 
-To build for a devkit instead of a seed J401, use `MACHINE=jetson-orin-nano-devkit-nvme`.
-
-The build needs about 200G in `build/tmp`. To keep the download and shared
+Note: The build needs about 200G in `build/tmp`. To keep the download and shared
 state caches elsewhere, create `build/conf/site.conf`:
 
 ```
@@ -53,27 +54,70 @@ DL_DIR = "/path/to/downloads"
 SSTATE_DIR = "/path/to/sstate-cache"
 ```
 
+Execute the build as
+
+```
+source layers/oe-init-build-env build
+bitbake demo-image-base
+```
+
 The flash package is
 `build/tmp/deploy/images/$MACHINE/demo-image-base-$MACHINE.rootfs.tegraflash-tar.zst`.
 
 ## Flashing
 
-Put the orin in recovery mode (hold RECOVERY while powering it on) and connect
-it over USB. `lsusb -d 0955:` on the flashing host shows `0955:7523` for this
-module. Then extract the flash package into an empty directory and run
-`sudo ./initrd-flash` in it.
+Perform the following steps to flash a new image on to your orin. This is required on the initial setup, or to apply changes to the kernel.
 
-The flashing host needs `parted` and `udisks2` installed. Without them the
+See also [docs/details.md](docs/details.md#booting).
+
+### 1. Enter recovery mode
+
+If you have a button header, hold RECOVERY while powering it on.
+
+If you do not have a button header, then:
+
+1. Power off the orin
+2. Connect a jumper between the pins labeled "FC REC" and "GND" (pins 9 and 10)
+3. Power on the orin, wait 2 seconds, disconnect the jumper
+
+To verify the orin is in recovery mode, run `lsusb -d 0955:` on the flashing host. It should show `0955:7523`.
+
+### 2. Flash the package
+
+Extract the flash package into an empty directory.
+
+Warning: Extracting a zst tarball from the Gnome GUI is prone to corruption! Instead, use a terminal to extract with
+
+```
+tar --zstd -xvf <flash_package>
+```
+
+Note: The flashing host needs `parted` and `udisks2` installed. Without them the
 flash stops at `partprobe` after the orin has shown up as a USB disk.
 
-Changing the kernel means reflashing; see
-[docs/details.md](docs/details.md#booting).
-
-To view the serial console:
+From this new directory, run
 
 ```
-python3 /usr/lib/python3/dist-packages/serial/tools/miniterm.py /dev/ttyUSB0 115200
+sudo ./initrd-flash
 ```
+
+### 3. Verify the flash worked
+
+After a successful flash, you can connect to your orin over ethernet:
+
+1. Ensure that the host has an IP address and netmask assigned for the ethernet adapter (e.g. 10.18.68.50/24)
+2. Plug in an ethernet cable to both the orin and the host machine
+3. Verify that the orin is visible to the host: `ping 10.18.68.101`
+4. ssh to the orin: `ssh pi@10.18.68.101` with password `raspberry`
+
+You can also use a USB serial cable to see the boot logs on the orin:
+
+1. Connect a USB serial cable from the host, to the orin.
+   * Connect the TX wire of the cable to the RX pin of the header (pin 3)
+   * Connenct the RX wire to the TX pin (pin 4)
+   * Connect the ground wire to the ground pin (pin 7)
+2. Run miniterm as
+   `python3 /usr/lib/python3/dist-packages/serial/tools/miniterm.py /dev/ttyUSB0 115200`
 
 ## AOS compatibility
 
