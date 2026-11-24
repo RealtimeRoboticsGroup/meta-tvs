@@ -38,12 +38,14 @@ data_size=$(unpack | wc -c)
 # the hashes of the files as they are once unpacked.
 unpack | tar -x --to-command='printf "%s  %s\n" "$(sha256sum | cut -d " " -f 1)" "$TAR_FILENAME"' \
     | LC_ALL=C sort -k 2 > "$tmp/SHA256SUMS"
+content_id=$(sha256sum "$tmp/SHA256SUMS" | cut -d ' ' -f 1)
 
 unpack | zstd -q $ZSTD_FLAGS -T"$threads" -o "$tmp/payload"
 payload_size=$(stat -c %s "$tmp/payload")
 
 sed -e "s|@PAYLOAD_SIZE@|$payload_size|" \
     -e "s|@DATA_SIZE@|$data_size|" \
+    -e "s|@CONTENT_ID@|$content_id|" \
     -e "s|@MACHINE@|$machine|" \
     -e "s|@IMAGE@|$(basename "$in")|" \
     -e "s|@RUNNAME@|$(basename "$out")|" \

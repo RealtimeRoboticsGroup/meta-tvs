@@ -92,7 +92,11 @@ Copy the `.run` flasher to a directory on the flashing host's own disk (not `/tm
 sudo bash ./demo-image-base-$MACHINE.rootfs.tegraflash-tar.run
 ```
 
-It unpacks the flash package next to itself, checks every file in it, waits for the orin in recovery mode, flashes it, and deletes the unpacked files again. It keeps the logs in a `flash-logs-*` directory next to itself, and says which packages to install if the host is missing any. Options after the name are passed to `initrd-flash`, e.g. `--erase-nvme`.
+It unpacks the flash package next to itself, checks every file in it, waits for the orin in recovery mode, flashes it, and deletes the unpacked files again. It keeps the logs in a `flash-logs-*` directory next to itself, and says which packages to install if the host is missing any.
+
+- `--nocheck` skips checking the unpacked files. Checking reads the whole root filesystem image, which takes minutes on a slow disk.
+- `--keep` keeps the unpacked package in a `.unpacked` directory next to the `.run`. Later runs of the same `.run` use it again without unpacking or checking, which saves time when flashing several orins.
+- Other options are passed to `initrd-flash`, e.g. `--erase-nvme`.
 
 To flash from the `.tegraflash-tar.zst` instead, extract it into an empty directory.
 

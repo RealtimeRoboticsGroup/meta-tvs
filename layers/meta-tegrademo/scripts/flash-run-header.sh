@@ -2,8 +2,14 @@
 # Flashes @IMAGE@ onto a Jetson (@MACHINE@).
 #
 # Put the Jetson in recovery mode and connect it over USB, then run:
-#   sudo bash ./@RUNNAME@
-# Options after the name are passed to initrd-flash, e.g. --erase-nvme.
+#   sudo bash ./@RUNNAME@ [--nocheck] [--keep] [initrd-flash options]
+#
+#   --nocheck  Don't check the unpacked files.  Checking reads the whole root
+#              filesystem image, which takes minutes on a slow disk.
+#   --keep     Keep the unpacked package in a directory next to this file.
+#              Later runs of this same file use it again, without unpacking
+#              or checking.
+# Other options are passed to initrd-flash, e.g. --erase-nvme.
 #
 # The flash package is appended to this script.  It is unpacked into a
 # directory next to this file, checked, flashed and deleted again; the logs
@@ -16,6 +22,9 @@ set -euo pipefail
 PAYLOAD_SIZE=@PAYLOAD_SIZE@
 # Space the unpacked package takes, not counting the holes in sparse files.
 DATA_SIZE=@DATA_SIZE@
+# Names this build's contents: a kept directory is only used again by the
+# build it came from.
+CONTENT_ID=@CONTENT_ID@
 
 die() {
     echo >&2
@@ -69,11 +78,13 @@ check_space() {
     fi
 }
 
+# Moves initrd-flash's logs out of the package, so a kept package doesn't
+# collect them.
 save_logs() {
     local f
     [ -d "$work" ] || return 0
     for f in "$work"/log.initrd-flash.* "$work"/device-logs-*; do
-        [ -e "$f" ] && cp -r "$f" "$logdir/"
+        [ -e "$f" ] && mv "$f" "$logdir/"
     done
     if [ -n "${SUDO_UID:-}" ]; then
         chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$logdir"
@@ -82,12 +93,49 @@ save_logs() {
 
 cleanup() {
     save_logs || true
-    rm -rf "$work"
+    if [ -z "$keep" ]; then
+        rm -rf "$work"
+    fi
+}
+
+# Unpacks the package into $work and, unless --nocheck, checks it.  .flash-run
+# in $work records how far that got, for --keep to find next time.
+unpack() {
+    echo "unpacking $CONTENT_ID" > "$work/.flash-run"
+    echo "== Unpacking into $work =="
+    # The release page lists the sha256 of this file.  It isn't checked here:
+    # zstd's checksum catches a corrupt download while unpacking, and the
+    # unpacked files are checked below.
+    if ! tail -c "$PAYLOAD_SIZE" "$self" | zstd -dc | tar -x --no-same-owner -C "$work"; then
+        die "Unpacking failed; $(basename "$self") may be corrupt.  Download it again."
+    fi
+    echo "unchecked $CONTENT_ID" > "$work/.flash-run"
+}
+
+check() {
+    echo "== Checking the unpacked files =="
+    cat > "$work/.SHA256SUMS" <<'EOF'
+@SHA256SUMS@
+EOF
+    if ! (cd "$work" && sha256sum --quiet -c .SHA256SUMS); then
+        die "The unpacked files don't match.  Check the disk in $here."
+    fi
+    echo "checked $CONTENT_ID" > "$work/.flash-run"
 }
 
 main() {
     self=$(readlink -f "$0")
     here=$(dirname "$self")
+
+    local nocheck="" flash_args=() arg
+    keep=""
+    for arg in "$@"; do
+        case "$arg" in
+            --nocheck|--no-check) nocheck=1 ;;
+            --keep) keep=1 ;;
+            *) flash_args+=("$arg") ;;
+        esac
+    done
 
     if [ "$(id -u)" -ne 0 ]; then
         die "Flashing needs root.  Run it with:
@@ -111,29 +159,41 @@ main() {
         die "$(basename "$self") is incomplete ($size bytes).  Download it again."
     fi
 
-    work=$(mktemp -d -p "$here" .flash-XXXXXX)
+    # A package kept by --keep is in <this file without .run>.unpacked, and
+    # is only kept from then on: a later run without --keep doesn't delete it.
+    local kept="${self%.run}.unpacked" state=""
+    if [ -d "$kept" ]; then
+        if [ ! -f "$kept/.flash-run" ]; then
+            die "$kept is in the way, and wasn't made by this script.  Move it away."
+        fi
+        state=$(cat "$kept/.flash-run")
+        keep=1
+    fi
+    if [ -n "$keep" ]; then
+        work=$kept
+    else
+        work=$(mktemp -d -p "$here" .flash-XXXXXX)
+    fi
     # Ctrl-C also kills tee, and writing to it then would kill this script
     # before it cleans up, so stop tracing and ignore SIGPIPE first.
     trap '{ set +x; } 2>/dev/null; trap "" PIPE; cleanup' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP
-    check_space
 
-    # The release page lists the sha256 of this file.  It isn't checked here:
-    # zstd's checksum catches a corrupt download while unpacking, and the
-    # unpacked files are checked below.
-    echo "== Unpacking into $work =="
-    if ! tail -c "$PAYLOAD_SIZE" "$self" | zstd -dc | tar -x --no-same-owner -C "$work"; then
-        die "Unpacking failed; $(basename "$self") may be corrupt.  Download it again."
-    fi
-
-    echo "== Checking the unpacked files =="
-    cat > "$work/.SHA256SUMS" <<'EOF'
-@SHA256SUMS@
-EOF
-    if ! (cd "$work" && sha256sum --quiet -c .SHA256SUMS); then
-        die "The unpacked files don't match.  Check the disk in $here."
-    fi
+    case "$state" in
+        "checked $CONTENT_ID")
+            echo "== Using $work, unpacked and checked before ==" ;;
+        "unchecked $CONTENT_ID")
+            echo "== Using $work, unpacked before =="
+            [ -n "$nocheck" ] || check ;;
+        *)
+            # Not unpacked yet, or from another build, or interrupted.
+            rm -rf "$work"
+            mkdir "$work"
+            check_space
+            unpack
+            [ -n "$nocheck" ] || check ;;
+    esac
 
     if [ -z "$(recovery_devices)" ]; then
         set +x
@@ -149,13 +209,16 @@ EOF
 
     echo "== Flashing =="
     local rc=0
-    (cd "$work" && ./initrd-flash "$@") || rc=$?
+    (cd "$work" && ./initrd-flash "${flash_args[@]}") || rc=$?
     set +x
     echo
     if [ "$rc" -ne 0 ]; then
         die "Flashing failed (exit status $rc).  Logs are in $logdir"
     fi
     echo "Flashing finished.  Logs are in $logdir"
+    if [ -n "$keep" ]; then
+        echo "The unpacked package is kept in $work"
+    fi
 }
 
 main "$@"
