@@ -26,12 +26,12 @@ S = "${UNPACKDIR}"
 
 inherit useradd
 
-GROUPADD_PARAM:${PN} = "sudo; video; system-journal; dialout; adm"
+GROUPADD_PARAM:${PN} = "sudo; video; systemd-journal; dialout; adm"
 
 USERADD_PACKAGES = "${PN}"
 
 # user: pi, password: raspberry
-USERADD_PARAM:${PN} = "-G sudo,video,system-journal,dialout,adm -m -p \"\\\$y\\\$j9T\\\$85lzhdky63CTj.two7Zj20\\\$pVY53UR0VebErMlm8peyrEjmxeiRw/rfXfx..9.xet1\" -r -s /bin/bash pi"
+USERADD_PARAM:${PN} = "-G sudo,video,systemd-journal,dialout,adm -m -p \"\\\$y\\\$j9T\\\$85lzhdky63CTj.two7Zj20\\\$pVY53UR0VebErMlm8peyrEjmxeiRw/rfXfx..9.xet1\" -r -s /bin/bash pi"
 
 
 install_content() {
